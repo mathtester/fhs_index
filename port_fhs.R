@@ -1,4 +1,5 @@
 library(fGarch)
+library(MASS)
 options(warn=-1)
 
 print(paste(Sys.time(), 'Start'))
@@ -8,6 +9,8 @@ calc.var <- function(price.df, garch.period, corr.period,
                      var.period, var.rank, idx.cnt) {
   # price.df is a data frame with dates as row names.
   # Each column is a series of historical prices.
+  # idx.cnt is the number of indices in the columns of price.df.
+  # It is assumed the stock indices are in the first columns.
   symbols <- colnames(price.df)
   stocks <- symbols[(idx.cnt + 1):length(symbols)]  # individual stock tickers.
   rtn.df <- price.df[-1, ] / price.df[-nrow(price.df), ] - 1
@@ -25,7 +28,7 @@ calc.var <- function(price.df, garch.period, corr.period,
     curr.date <- rownames(rtn.df)[j+garch.period-1]
     garch.df[j, 'date'] <- curr.date
     for (s in symbols) {
-      # garchFit dump un
+      # skip outputs of garchFit().
       capture.output( {
         gm <- garchFit(~garch(1,1), data = selected[, s], include.mean = FALSE)
       } )
@@ -68,42 +71,82 @@ calc.var <- function(price.df, garch.period, corr.period,
 }
 
 
+load.dji <- function() {
+  # This file is obtained from DJI component at the end of 2020,
+  # with DOW removed due to its short history.
+  compo <- read.csv('input/components.csv', header = TRUE)
+  start.date <- '2018-01-01'
+  tickers <- compo[, 1]
+  price.df <- NULL
+  for (t in tickers) {
+    prc.history <- read.csv(paste('input/', t, '.csv', sep=''), header = TRUE)
+    if (is.null(price.df)) {
+      price.df <- as.data.frame(
+        prc.history[prc.history['Date'] >= start.date, 'Adj.Close'],
+        row.names = prc.history[prc.history['Date'] >= start.date, 'Date'])
+    } else {
+      price.df <- cbind(price.df, prc.history[prc.history['Date'] >= start.date, 'Adj.Close'])
+    }
+  }
+  colnames(price.df) <- tickers
+  
+  port.cor <- cor(price.df)
+  d <- nrow(port.cor)
+  avg.cor <- (sum(port.cor) - d) / d / (d-1)
+  print(sprintf('%s Average return correlation in DJI is %f', Sys.time(), avg.cor))
+  
+  price.df['index'] <- rowSums(price.df)
+  prc.history <- read.csv('input/^DJI.csv', header = TRUE)
+  price.df['DJI'] <- prc.history[prc.history['Date'] >= start.date, 'Adj.Close']
+  price.df <- price.df[c(d+2, d+1, 1:d)]
+  
+  return(price.df)
+}
+
+
+simu.port <- function() {
+  nstock <- 30
+  regimes <- c( 550,   50,   50,   50,   50,   50,   50,  250 )
+  sigmas <-  c(0.02, 0.04, 0.04, 0.02, 0.02, 0.02, 0.04, 0.04 )
+  correls <- c( 0.3,  0.3,  0.9,  0.9,  0.3,    0,    0,  0.9 )
+  init.prc <- rep(100, nstock)
+  price.df <- data.frame(matrix(init.prc, nrow = 1))
+  ones <- matrix(rep(1, nstock^2), nrow = nstock)
+  mu <- rep(0, nstock)
+  cnt <- 1
+  for (j in 1:length(regimes)) {
+    corr.mat <- correls[j] * ones + (1 - correls[j]) * diag(nstock)
+    rtns <- mvrnorm(regimes[j], mu, corr.mat)
+    for (d in 1:regimes[j]) {
+      cnt <- cnt + 1
+      price.df[cnt, ] <- price.df[cnt-1, ] * (1 + rtns[d, ] * sigmas[j])
+    }
+  }
+  price.df['index'] <- rowSums(price.df)
+  price.df <- price.df[c(nstock+1, 1:nstock)]
+  return(price.df)
+}
+
+
 # Construct price data frame for all symbols and the portfolio.
-start.date <- '2018-01-01'
 garch.period <- 250
 corr.period <- 5
 var.period <- 250
 var.rank <- 2
-idx.cnt <- 2
-# This file is obtained from DJI component at the end of 2020,
-# with DOW removed due to its short history.
-compo <- read.csv('input/components.csv', header = TRUE)
-tickers <- compo[, 1]
-price.df <- NULL
-for (t in tickers) {
-  prc.history <- read.csv(paste('input/', t, '.csv', sep=''), header = TRUE)
-  if (is.null(price.df)) {
-    price.df <- as.data.frame(
-      prc.history[prc.history['Date'] >= start.date, 'Adj.Close'],
-      row.names = prc.history[prc.history['Date'] >= start.date, 'Date'])
-  } else {
-    price.df <- cbind(price.df, prc.history[prc.history['Date'] >= start.date, 'Adj.Close'])
-  }
+set.seed(5)
+
+if (TRUE) {
+  price.df <- load.dji()
+  fhs <- calc.var(price.df, garch.period, corr.period, var.period, var.rank, 2)
+  outfile <- 'output/fhs_dji.csv'
+  write.csv(fhs, file = outfile, quote = FALSE, sep = ',')
 }
-colnames(price.df) <- tickers
 
-port.cor <- cor(price.df)
-d <- nrow(port.cor)
-avg.cor <- (sum(port.cor) - d) / d / (d-1)
-print(sprintf('%s Average return correlation is %f', Sys.time(), avg.cor))
-
-price.df['index'] <- rowSums(price.df)
-prc.history <- read.csv('input/^DJI.csv', header = TRUE)
-price.df['DJI'] <- prc.history[prc.history['Date'] >= start.date, 'Adj.Close']
-price.df <- price.df[c(d+2, d+1, 1:d)]
-fhs <- calc.var(price.df, garch.period, corr.period, var.period, var.rank, idx.cnt)
-outfile <- 'output/fhs.csv'
-write.csv(fhs, file = outfile, quote = FALSE, sep = ',')
-
+if (FALSE) {
+  price.df <- simu.port()
+  fhs <- calc.var(price.df, garch.period, corr.period, var.period, var.rank, 1)
+  outfile <- 'output/fhs_sim.csv'
+  write.csv(fhs, file = outfile, quote = FALSE, sep = ',')
+}
 
 print(paste(Sys.time(), 'End. See', outfile))
