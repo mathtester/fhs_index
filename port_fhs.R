@@ -2,8 +2,7 @@ library(fGarch)
 library(MASS)
 options(warn=-1)
 
-print(paste(Sys.time(), 'Start'))
-
+# The total run time is about 20 min on a PC.
 
 calc.var <- function(price.df, garch.period, corr.period,
                      var.period, var.rank, idx.cnt) {
@@ -106,11 +105,13 @@ load.dji <- function() {
 
 simu.port <- function() {
   nstock <- 30
-  regimes <- c( 550,   50,   50,   50,   50,   50,   50,  250 )
-  sigmas <-  c(0.02, 0.04, 0.04, 0.02, 0.02, 0.02, 0.04, 0.04 )
-  correls <- c( 0.3,  0.3,  0.9,  0.9,  0.3,    0,    0,  0.9 )
+  regimes <- c( 800,   50,   50,   50,   50,   50,   50,  50,  100 )
+  sigmas <-  c(0.01, 0.02, 0.02, 0.01, 0.01, 0.01, 0.02, 0.02, 0.02 )
+  correls <- c( 0.3,  0.3,  0.9,  0.9,  0.3,    0,    0,  0.9, 0.4 )
   init.prc <- rep(100, nstock)
   price.df <- data.frame(matrix(init.prc, nrow = 1))
+  parm.df <- data.frame(matrix(ncol = 2, nrow = 0))
+  colnames(parm.df) <- c('sigma', 'correl')
   ones <- matrix(rep(1, nstock^2), nrow = nstock)
   mu <- rep(0, nstock)
   cnt <- 1
@@ -118,35 +119,48 @@ simu.port <- function() {
     corr.mat <- correls[j] * ones + (1 - correls[j]) * diag(nstock)
     rtns <- mvrnorm(regimes[j], mu, corr.mat)
     for (d in 1:regimes[j]) {
+      parm.df[cnt, ] <- c(sigmas[j], correls[j])
       cnt <- cnt + 1
       price.df[cnt, ] <- price.df[cnt-1, ] * (1 + rtns[d, ] * sigmas[j])
     }
   }
   price.df['index'] <- rowSums(price.df)
   price.df <- price.df[c(nstock+1, 1:nstock)]
-  return(price.df)
+  return(list(price.df, parm.df))
 }
 
 
+print(paste(Sys.time(), 'Start'))
+
 # Construct price data frame for all symbols and the portfolio.
 garch.period <- 250
-corr.period <- 5
-var.period <- 250
-var.rank <- 2
+corr.period <- 10
 set.seed(5)
 
 if (TRUE) {
+  # Use historical DJI component prices.
+  var.period <- 250
+  var.rank <- 2
   price.df <- load.dji()
   fhs <- calc.var(price.df, garch.period, corr.period, var.period, var.rank, 2)
   outfile <- 'output/fhs_dji.csv'
   write.csv(fhs, file = outfile, quote = FALSE, sep = ',')
+  print(paste(Sys.time(), 'Finished DJI. See', outfile))
 }
 
-if (FALSE) {
-  price.df <- simu.port()
+
+if (TRUE) {
+  # Use simulated prices.
+  var.period <- 500
+  var.rank <- 5
+  x <- simu.port()
+  price.df <- x[[1]]
+  parm.df <- x[[2]]
   fhs <- calc.var(price.df, garch.period, corr.period, var.period, var.rank, 1)
+  fhs <- cbind(parm.df[garch.period:nrow(parm.df), ], fhs)
+  fhs <- fhs[, c(3, 1, 2, 4:ncol(price.df))]
   outfile <- 'output/fhs_sim.csv'
-  write.csv(fhs, file = outfile, quote = FALSE, sep = ',')
+  write.csv(fhs, file = outfile, quote = FALSE, row.names = FALSE, sep = ',')
+  print(paste(Sys.time(), 'Finished simulation. See', outfile))
 }
 
-print(paste(Sys.time(), 'End. See', outfile))
